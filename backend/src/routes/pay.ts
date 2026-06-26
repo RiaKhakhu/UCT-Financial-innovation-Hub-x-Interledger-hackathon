@@ -128,13 +128,15 @@ payRouter.post('/quote', requireAuth, async (req, res, next) => {
       });
     }
 
-    // topUpCents is in ZAR cents — Open Payments uses the wallet's native scale.
-    // ZAR assetScale is 2 (cents), so the value in smallest unit = topUpCents.
+    // topUpCents is the shortfall the ILP wallet must cover.
+    // We use FIXED_RECEIVE so the merchant receives exactly topUpCents
+    // in their wallet's native currency (smallest unit), and the quote
+    // resolves the sender's debit amount automatically.
     const result = await createQuoteTransaction({
       senderWalletAddress:   userRow.walletAddress,
       receiverWalletAddress: normaliseWalletAddress(voucher.merchantWallet),
       amount:                topUpCents.toString(),
-      paymentType:           'FIXED_SEND',
+      paymentType:           'FIXED_RECEIVE',
       userId:                req.user!.id,
     });
 

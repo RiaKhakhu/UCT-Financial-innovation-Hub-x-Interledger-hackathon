@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import {
   createAuthenticatedClient,
   isPendingGrant,
@@ -10,12 +13,40 @@ import { config } from '../config';
 // The client signs every request with the Ed25519 private key.
 let _client: Awaited<ReturnType<typeof createAuthenticatedClient>> | null = null;
 
+/**
+ * Load the private key from the configured path.
+ * The .pem file may either be:
+ *   (a) A proper PEM file with -----BEGIN PRIVATE KEY----- headers, or
+ *   (b) A bare base64-encoded DER/PKCS8 blob (no headers) — as produced by
+ *       the Interledger test wallet developer-key download.
+ * In case (b) we decode the base64, import it as DER, then re-export as PEM
+ * so the Open Payments SDK always receives a well-formed PEM string.
+ */
+function loadPrivateKey(): Buffer {
+  const keyPath = path.resolve(__dirname, '..', '..', config.op.privateKeyPath);
+  const raw = fs.readFileSync(keyPath, 'utf8').trim();
+
+  // Already a proper PEM — return as-is.
+  if (raw.startsWith('-----')) {
+    return Buffer.from(raw);
+  }
+
+  // Bare base64 DER (PKCS8) — wrap it properly.
+  const der = Buffer.from(raw, 'base64');
+  const keyObject = crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' });
+  const pem = keyObject.export({ type: 'pkcs8', format: 'pem' }) as string;
+  return Buffer.from(pem);
+}
+
 export async function getClient() {
   if (_client) return _client;
+
+  const privateKey = loadPrivateKey();
+
   _client = await createAuthenticatedClient({
     walletAddressUrl: config.op.walletAddress,
     keyId:            config.op.keyId,
-    privateKey:       config.op.privateKeyPath, // file path — SDK reads the .pem itself
+    privateKey,
   });
   return _client;
 }

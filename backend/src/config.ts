@@ -12,7 +12,7 @@ export const config = {
   frontendUrl: process.env.FRONTEND_URL ?? 'http://localhost:5173',
 
   op: {
-    walletAddress: required('OP_WALLET_ADDRESS'),
+    walletAddress: required('OP_WALLET_ADDRESS').replace(/^\$/, 'https://'),
     keyId:         required('OP_KEY_ID'),
     privateKeyPath: required('OP_PRIVATE_KEY_PATH'),
   },
