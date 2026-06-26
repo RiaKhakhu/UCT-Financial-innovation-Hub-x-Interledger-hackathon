@@ -1,0 +1,378 @@
+================================================================================
+  VOUCHER2 — PROJECT CONTEXT
+  Interledger Hackathon 2026
+  Last updated: June 2026
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+  WHAT THIS APP DOES
+────────────────────────────────────────────────────────────────────────────────
+
+Voucher2 is a web app that lets users pay at South African retailers using a
+combination of store gift vouchers and an Interledger (ILP) wallet. The core
+idea: if your Checkers voucher has R80 and you're buying R120 worth of groceries,
+the app auto-combines your voucher(s) and tops up the R40 shortfall via an ILP
+Open Payments transaction — all in one checkout flow.
+
+Key concepts:
+- Vouchers are provider-specific: a Checkers voucher can only be used at Checkers.
+- Multiple vouchers from the same provider are auto-combined (greedy, oldest first).
+- The ILP wallet covers any remainder the vouchers don't cover.
+- If the user has NO vouchers for the selected merchant, the full amount is paid
+  via their ILP wallet.
+- The app runs on the Interledger TEST network (play money, no real funds).
+
+
+────────────────────────────────────────────────────────────────────────────────
+  TECH STACK
+────────────────────────────────────────────────────────────────────────────────
+
+Backend:
+  - Node.js + TypeScript, Express
+  - Drizzle ORM + libsql (SQLite, file: ./openremit.db)
+  - @interledger/open-payments SDK v7.4.0
+  - JWT auth (jsonwebtoken + bcryptjs)
+  - tsx watch for hot-reload in dev
+  - Runs on port 3001
+
+Frontend:
+  - Vanilla TypeScript (no framework) + Vite
+  - Hash-based SPA router (#/route)
+  - Runs on port 5173
+  - All views are plain TypeScript files in src/views/ that render to innerHTML
+
+Package manager: npm
+Monorepo layout: backend/ and frontend/ are separate packages under the root.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  PROJECT STRUCTURE
+────────────────────────────────────────────────────────────────────────────────
+
+Voucher2/
+├── backend/
+│   ├── .env                          ← credentials (see section below)
+│   ├── openremit.db                  ← SQLite database (live data)
+│   ├── private.key/
+│   │   └── euracc.pem                ← Ed25519 private key (bare base64 DER)
+│   ├── src/
+│   │   ├── config.ts                 ← loads .env, normalises OP_WALLET_ADDRESS
+│   │   ├── index.ts                  ← Express app entry, seeds vouchers on boot
+│   │   ├── db/
+│   │   │   ├── index.ts              ← libsql client + drizzle instance
+│   │   │   └── schema.ts             ← all DB table definitions
+│   │   ├── lib/
+│   │   │   ├── openPayments.ts       ← authenticated client singleton, key loader
+│   │   │   ├── quoteFlow.ts          ← reusable Open Payments quote logic
+│   │   │   ├── seedVouchers.ts       ← seeds 12 pool vouchers on first boot
+│   │   │   └── seedNews.ts           ← seeds demo news posts
+│   │   ├── middleware/
+│   │   │   ├── requireAuth.ts        ← JWT bearer token middleware
+│   │   │   └── errorHandler.ts       ← global Express error handler
+│   │   └── routes/
+│   │       ├── auth.ts               ← /api/auth (signup, login, me, update)
+│   │       ├── users.ts              ← /api/users (search, public profile)
+│   │       ├── pay.ts                ← /api/pay (voucher wallet + pay flow)
+│   │       ├── remit.ts              ← /api/remit (direct ILP sends, history)
+│   │       ├── requests.ts           ← /api/requests (payment requests)
+│   │       ├── news.ts               ← /api/news (web monetization demo)
+│   │       └── callback.ts           ← /api/callback (GNAP redirect handler)
+│
+└── frontend/
+    ├── index.html                    ← nav + app shell
+    ├── src/
+    │   ├── main.ts                   ← router, state, view orchestration
+    │   ├── api.ts                    ← all API calls + TypeScript types
+    │   ├── auth.ts                   ← JWT token in localStorage
+    │   ├── styles.css                ← full dark blue theme
+    │   ├── money.ts                  ← formatMoney / formatPrice helpers
+    │   ├── escape.ts                 ← escapeHtml (XSS protection)
+    │   ├── pointer.ts                ← wallet address → $pointer display
+    │   ├── avatar.ts                 ← avatar helpers
+    │   ├── txStatus.ts               ← isQuoteExpired helper
+    │   └── views/
+    │       ├── homeView.ts           ← landing / dashboard
+    │       ├── loginView.ts
+    │       ├── signupView.ts
+    │       ├── profileView.ts
+    │       ├── historyView.ts        ← transaction history table
+    │       ├── vouchersView.ts       ← MY VOUCHERS wallet + load form
+    │       ├── payView.ts            ← PAY FLOW steps 1-2 (merchant + amount)
+    │       ├── payConsentView.ts     ← PAY FLOW step 2 breakdown + authorise
+    │       ├── paySuccessView.ts     ← voucher-only success screen
+    │       ├── consentView.ts        ← direct ILP send consent screen
+    │       ├── statusView.ts         ← transaction polling screen
+    │       └── (remit/requests/news views)
+
+
+────────────────────────────────────────────────────────────────────────────────
+  DATABASE SCHEMA (key tables)
+────────────────────────────────────────────────────────────────────────────────
+
+users
+  id, display_name, email, password_hash, avatar (base64), wallet_address, created_at
+
+transactions
+  id, status (PENDING|AWAITING_GRANT|COMPLETED|FAILED), payment_type (FIXED_SEND|FIXED_RECEIVE),
+  sender_wallet_address, receiver_wallet_address,
+  debit_amount, receive_amount, asset_code, asset_scale,
+  receive_asset_code, receive_asset_scale,
+  incoming_payment_url, quote_url, outgoing_payment_url,
+  quote_expires_at, grant_continue_uri, grant_continue_token, grant_interact_nonce,
+  user_id (FK → users), error_message, created_at, updated_at
+
+vouchers  ← DUAL ROLE TABLE
+  id, code (unique), provider (e.g. "Checkers"), label, balance_cents,
+  merchant_wallet (ILP wallet address for top-ups),
+  user_id (NULL = unissued pool voucher; UUID = loaded onto that user),
+  status (ACTIVE|DEPLETED|EXPIRED), created_at, updated_at
+
+payment_requests
+  id, requester_id, payer_id, payment_type, amount, asset_code, asset_scale,
+  note, status (PENDING|COMPLETED|DECLINED|CANCELLED), transaction_id, created_at, updated_at
+
+posts + post_unlocks  ← web monetization demo, not core to voucher feature
+
+
+────────────────────────────────────────────────────────────────────────────────
+  VOUCHER POOL — DEMO CODES (seeded on first boot)
+────────────────────────────────────────────────────────────────────────────────
+
+All pool vouchers have user_id = NULL until a user loads them.
+All point to merchantWallet = https://ilp.interledger-test.dev/theguy (ZAR, scale 2).
+
+  Provider      Code              Balance
+  ─────────────────────────────────────────
+  Checkers      PICK-1234-ABCD    R100.00
+  Checkers      PICK-2345-BCDE    R50.00
+  Checkers      PICK-3456-CDEF    R200.00
+  Woolworths    WOOL-5678-EFGH    R200.00
+  Woolworths    WOOL-6789-FGHI    R100.00
+  Woolworths    WOOL-7890-GHIJ    R500.00
+  SPAR          SPAR-9012-IJKL    R50.00
+  SPAR          SPAR-0123-JKLM    R100.00
+  Edgars        EDGR-3456-MNOP    R150.00
+  Edgars        EDGR-4567-NOPQ    R75.00
+  Game Stores   GAME-7890-QRST    R500.00
+  Game Stores   GAME-8901-RSTU    R250.00
+
+
+────────────────────────────────────────────────────────────────────────────────
+  BACKEND API SURFACE  (all require Bearer JWT unless noted)
+────────────────────────────────────────────────────────────────────────────────
+
+Auth
+  POST /api/auth/signup           { displayName, email, password } → { token, user }
+  POST /api/auth/login            { email, password } → { token, user }
+  GET  /api/auth/me               → User
+  PATCH /api/auth/me              partial User update (walletAddress, avatar, etc.)
+
+Users
+  GET  /api/users/search?q=       → UserSearchResult[]
+  GET  /api/users/:id             → { user, sharedTransactions[] }
+
+Pay (voucher wallet + checkout)
+  GET  /api/pay/merchants         → string[]   (all provider names for merchant picker)
+  GET  /api/pay/providers         → string[]   (providers with unclaimed pool vouchers)
+  POST /api/pay/load              { provider, code } → VoucherInfo
+  GET  /api/pay/my-vouchers       → VoucherInfo[]
+  POST /api/pay/quote             { purchaseAmountCents, merchant } → PayQuoteResponse
+  POST /api/pay/confirm           { contributions[] } → { ok }
+
+Remit (direct ILP sends)
+  POST /api/remit/quote           { senderWalletAddress, receiverWalletAddress, amount, paymentType }
+  POST /api/remit/consent         { transactionId } → { interactUrl }
+  GET  /api/remit/status/:id      → Transaction (public, no auth needed)
+  GET  /api/remit/history         → HistoryEntry[]
+  GET  /api/remit/wallet-info     ?url= → { assetCode, assetScale }
+
+Payment Requests
+  POST /api/requests              { payerId, paymentType, amount, note? }
+  GET  /api/requests              → { incoming[], outgoing[] }
+  POST /api/requests/:id/fulfill  → QuoteResponse
+  POST /api/requests/:id/decline  → { status }
+  POST /api/requests/:id/cancel   → { status }
+
+News (web monetization demo)
+  GET  /api/news/posts            → NewsPost[]
+  GET  /api/news/posts/:id        → NewsPost (body if unlocked)
+  POST /api/news/posts/:id/wm-unlock
+  POST /api/news/posts/:id/unlock → QuoteResponse
+
+Callback (GNAP)
+  GET  /api/callback              ?interact_ref=&transactionId=&hash= (auth server redirect)
+
+Health
+  GET  /api/health                → { ok: true }  (no auth)
+
+
+────────────────────────────────────────────────────────────────────────────────
+  PAY FLOW — HOW IT WORKS END TO END
+────────────────────────────────────────────────────────────────────────────────
+
+Step 1 — Merchant picker (payView.ts, step-dot 1)
+  User sees a grid of merchant tiles (Checkers, Woolworths, etc.).
+  Tapping one moves to Step 2.
+
+Step 2 — Amount entry (payView.ts, step-dot 2)
+  Shows only the user's loaded vouchers for the selected merchant with total.
+  If no matching vouchers: shows a warning, full amount goes via ILP wallet.
+  User enters purchase amount in ZAR and clicks "Get breakdown →".
+  Calls POST /api/pay/quote { purchaseAmountCents, merchant }.
+
+Backend /quote logic:
+  - Fetches user's ACTIVE vouchers for that provider, oldest first.
+  - Greedy drain: takes from each voucher until purchase is covered.
+  - If fully covered: deducts immediately, returns requiresTopUp=false.
+  - If remainder: runs Open Payments quote flow (FIXED_RECEIVE, merchant ZAR wallet).
+  - Returns: { requiresTopUp, voucherCovers, topUpCents, merchant,
+               contributions[], transactionId, quote }
+
+Step 3 — Breakdown + authorise (payConsentView.ts, step-dot 2→3)
+  Shows the split: each voucher contribution + ILP top-up (if needed).
+  If voucher-only → "Confirm" → voucher deducted → #/pay-success.
+  If top-up needed → "Authorise" → calls POST /api/remit/consent
+    → redirect to wallet's interactUrl (GNAP interactive grant).
+
+GNAP callback → /api/callback
+  Auth server redirects back with interact_ref.
+  Backend continues grant, creates outgoing payment, marks transaction COMPLETED.
+  Redirects browser to frontend /?status=completed&id=<txId>.
+  NOTE: voucher deduction for the top-up path happens in /api/pay/confirm
+        which should be called by the callback handler (TODO: not yet wired —
+        the callback currently only completes the ILP transaction but does not
+        call /api/pay/confirm to deduct vouchers for the top-up path).
+
+Step 4 — Status polling (statusView.ts)
+  Frontend polls GET /api/remit/status/:id every 2s until COMPLETED/FAILED/expired.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  OPEN PAYMENTS / ILP CREDENTIALS
+────────────────────────────────────────────────────────────────────────────────
+
+Environment: Interledger TEST network (https://wallet.interledger-test.dev)
+             Play money only — no real funds.
+
+backend/.env variables:
+  OP_WALLET_ADDRESS   = $ilp.interledger-test.dev/ebba754   (EUR wallet, the app's signing wallet)
+  OP_KEY_ID           = 24f93820-0dce-4994-a876-ec7e58fb6bfa
+  OP_PRIVATE_KEY_PATH = ./private.key/euracc.pem
+
+Key file format:
+  The .pem file is a bare base64-encoded DER/PKCS8 blob (no PEM headers).
+  openPayments.ts detects this and wraps it in proper PEM headers before
+  passing it to the SDK. This is a quirk of how the test wallet exports keys.
+
+Merchant wallet (receives top-up payments):
+  https://ilp.interledger-test.dev/theguy   (ZAR, assetScale=2)
+  All demo vouchers use this as their merchantWallet.
+
+Payment direction:
+  Sender = user's own ILP wallet (stored in users.wallet_address).
+  Receiver = merchant wallet (theguy).
+  Payment type = FIXED_RECEIVE: merchant gets exactly topUpCents ZAR,
+  the quote calculates how much EUR (or whatever currency) the sender pays.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  FRONTEND ROUTES
+────────────────────────────────────────────────────────────────────────────────
+
+  #/              Home (public landing or logged-in dashboard)
+  #/login         Login form
+  #/signup        Signup form
+  #/profile       Edit profile, set wallet address, upload avatar
+  #/vouchers      MY VOUCHERS — view loaded vouchers + load new ones
+  #/pay           PAY FLOW — merchant picker → amount → breakdown → authorise
+  #/pay-consent   Breakdown/authorise screen (reached via pay flow state)
+  #/pay-success   Voucher-only payment success
+  #/history       Transaction history table
+  ?id=<uuid>      GNAP callback landing (triggers status view)
+
+
+────────────────────────────────────────────────────────────────────────────────
+  KNOWN ISSUES / TODO
+────────────────────────────────────────────────────────────────────────────────
+
+1. VOUCHER DEDUCTION AFTER ILP TOP-UP NOT WIRED
+   When a payment requires an ILP top-up, the voucher balances need to be
+   deducted AFTER the outgoing payment completes (in /api/callback).
+   Currently the callback does NOT call /api/pay/confirm — so voucher balances
+   are not reduced when the top-up path is used. The no-top-up path works
+   correctly (deducted in /quote). This is the next thing to fix.
+
+2. JWT_SECRET IS DEFAULT
+   The .env uses JWT_SECRET=changeme. Fine for dev/demo, must be changed
+   before any real deployment.
+
+3. SINGLE MERCHANT WALLET FOR ALL PROVIDERS
+   All 5 merchant providers (Checkers, Woolworths, etc.) share the same
+   merchantWallet (theguy). In production each merchant would have their own
+   ILP wallet address. The schema already supports per-voucher merchantWallet
+   so this is a data change, not a code change.
+
+4. POOL VOUCHER EXHAUSTION
+   Each pool code can only be claimed once. Once all codes for a provider are
+   claimed, the load form will still show the provider but loading will fail.
+   For the hackathon demo this is fine. In production, the pool would be
+   replenished by the retailer's actual voucher system.
+
+5. NO VOUCHER REMOVAL / MANAGEMENT
+   Users can load vouchers but cannot remove them from their wallet.
+   There is no admin interface to manage the pool.
+
+6. NEWS / WEB MONETIZATION FEATURE
+   The app also has a news paywall demo (Web Monetization streaming payments).
+   This is a secondary feature separate from the voucher flow. It is seeded
+   and functional but not the focus of current development.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  HOW TO RUN LOCALLY
+────────────────────────────────────────────────────────────────────────────────
+
+Prerequisites: Node.js 18+, npm
+
+Backend:
+  cd backend
+  npm install
+  npm run dev          # starts tsx watch on port 3001
+
+Frontend:
+  cd frontend
+  npm install
+  npm run dev          # starts Vite on port 5173
+
+The backend seeds 12 pool vouchers automatically on first boot.
+The SQLite database file is backend/openremit.db.
+
+To reset the database: delete openremit.db and restart the backend.
+The seed will re-run and create a fresh pool.
+
+
+────────────────────────────────────────────────────────────────────────────────
+  CURRENT DEVELOPMENT STATUS
+────────────────────────────────────────────────────────────────────────────────
+
+COMPLETED:
+  ✓ Auth (signup/login/JWT/profile)
+  ✓ Open Payments client (private key loading, PEM normalisation)
+  ✓ Full ILP quote → consent → callback → status flow
+  ✓ Transaction history
+  ✓ Payment requests (send/receive asks)
+  ✓ Web monetization news demo
+  ✓ Voucher wallet: load vouchers by provider + code
+  ✓ My Vouchers page: grouped by provider with balances
+  ✓ Pay flow: merchant picker → amount entry → auto-combine vouchers
+  ✓ Provider-specific voucher restriction (Checkers vouchers only at Checkers)
+  ✓ ILP-only fallback when user has no vouchers for selected merchant
+  ✓ Breakdown screen showing per-voucher contributions + ILP top-up
+
+IN PROGRESS / NEXT:
+  → Wire voucher deduction into /api/callback for the top-up path (#1 above)
+  → Test full end-to-end flow: load voucher → pick merchant → pay → ILP consent
+    → callback → vouchers deducted
+  → UI polish and edge case handling
+
+================================================================================
