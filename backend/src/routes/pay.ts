@@ -128,10 +128,10 @@ payRouter.post('/quote', requireAuth, async (req, res, next) => {
       });
     }
 
-    // topUpCents is the shortfall the ILP wallet must cover.
-    // We use FIXED_RECEIVE so the merchant receives exactly topUpCents
-    // in their wallet's native currency (smallest unit), and the quote
-    // resolves the sender's debit amount automatically.
+    // topUpCents is ZAR cents (the merchant wallet is ZAR).
+    // The sender's wallet may be a different currency (e.g. EUR), so we use
+    // FIXED_RECEIVE: the merchant receives exactly topUpCents in ZAR, and the
+    // quote resolves the correct debit amount in the sender's own currency.
     const result = await createQuoteTransaction({
       senderWalletAddress:   userRow.walletAddress,
       receiverWalletAddress: normaliseWalletAddress(voucher.merchantWallet),

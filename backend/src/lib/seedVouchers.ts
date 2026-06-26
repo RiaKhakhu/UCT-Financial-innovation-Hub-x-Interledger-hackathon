@@ -27,7 +27,7 @@ export async function seedVouchers(): Promise<void> {
       code:           v.code,
       label:          v.label,
       balanceCents:   v.balanceCents,
-      merchantWallet: config.op.walletAddress,
+      merchantWallet: 'https://ilp.interledger-test.dev/theguy',
       status:         'ACTIVE' as const,
       createdAt:      now,
       updatedAt:      now,
