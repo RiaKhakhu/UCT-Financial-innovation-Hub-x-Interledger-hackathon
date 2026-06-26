@@ -1,7 +1,7 @@
 import './styles.css';
 import { isLoggedIn } from './auth';
 import { api, User } from './api';
-import type { PayQuoteResponse, VoucherInfo } from './api';
+import type { PayQuoteResponse } from './api';
 import { renderHomeView }       from './views/homeView';
 import { renderLoginView }      from './views/loginView';
 import { renderSignupView }     from './views/signupView';
@@ -11,6 +11,7 @@ import { renderPayView }        from './views/payView';
 import { renderPayConsentView } from './views/payConsentView';
 import { renderPaySuccessView } from './views/paySuccessView';
 import { renderStatusView }     from './views/statusView';
+import { renderVouchersView }   from './views/vouchersView';
 
 const view     = document.getElementById('view')!;
 const nav      = document.getElementById('main-nav')!;
@@ -20,7 +21,6 @@ const navLinks = nav.querySelectorAll<HTMLAnchorElement>('.nav-link');
 
 interface PendingPay {
   result:              PayQuoteResponse;
-  voucher:             VoucherInfo;
   purchaseAmountCents: number;
 }
 
@@ -43,7 +43,6 @@ function showPayConsent(): void {
   renderPayConsentView(
     view,
     pendingPay.result,
-    pendingPay.voucher,
     pendingPay.purchaseAmountCents,
     () => { if (cachedUser) showPay(cachedUser); }
   );
@@ -54,10 +53,9 @@ function showStatus(id: string): void {
 }
 
 async function showPay(user: User): Promise<void> {
-  renderPayView(view, user, (result: PayQuoteResponse, voucher: VoucherInfo) => {
-    // Recalculate purchaseAmountCents from voucher covers + top-up
+  await renderPayView(view, user, (result: PayQuoteResponse) => {
     const purchaseAmountCents = result.voucherCovers + result.topUpCents;
-    pendingPay = { result, voucher, purchaseAmountCents };
+    pendingPay = { result, purchaseAmountCents };
     showPayConsent();
   });
 }
@@ -116,6 +114,10 @@ async function route(): Promise<void> {
   }
   if (path === '/history') {
     await renderHistoryView(view);
+    return;
+  }
+  if (path === '/vouchers') {
+    await renderVouchersView(view);
     return;
   }
   if (path === '/profile') {

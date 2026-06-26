@@ -180,18 +180,24 @@ export interface PublicProfile {
 export interface VoucherInfo {
   id:           string;
   code:         string;
+  provider:     string;
   label:        string;
   balanceCents: number;
-  balanceRands: string;
   status:       'ACTIVE' | 'DEPLETED' | 'EXPIRED';
+}
+
+export interface VoucherContribution {
+  voucherId:    string;
+  label:        string;
+  deductCents:  number;
 }
 
 export interface PayQuoteResponse {
   requiresTopUp:  boolean;
   voucherCovers:  number;   // cents
   topUpCents:     number;
-  voucherLabel:   string;
-  voucherId?:     string;
+  merchant:       string;
+  contributions:  VoucherContribution[];
   transactionId:  string | null;
   quote:          QuoteResponse['quote'] | null;
 }
@@ -297,11 +303,17 @@ export const api = {
   history: () => get<HistoryEntry[]>('/api/remit/history', true),
 
   pay: {
-    lookup: (code: string) =>
-      post<VoucherInfo>('/api/pay/lookup', { code }, true),
-    quote: (body: { voucherId: string; purchaseAmountCents: number }) =>
+    merchants: () =>
+      get<string[]>('/api/pay/merchants', true),
+    providers: () =>
+      get<string[]>('/api/pay/providers', true),
+    load: (body: { provider: string; code: string }) =>
+      post<VoucherInfo>('/api/pay/load', body, true),
+    myVouchers: () =>
+      get<VoucherInfo[]>('/api/pay/my-vouchers', true),
+    quote: (body: { purchaseAmountCents: number; merchant: string }) =>
       post<PayQuoteResponse>('/api/pay/quote', body, true),
-    confirm: (body: { voucherId: string; deductCents: number }) =>
-      post<{ ok: boolean; remainingCents: number }>('/api/pay/confirm', body, true),
+    confirm: (body: { contributions: Array<{ voucherId: string; deductCents: number }> }) =>
+      post<{ ok: boolean }>('/api/pay/confirm', body, true),
   },
 };

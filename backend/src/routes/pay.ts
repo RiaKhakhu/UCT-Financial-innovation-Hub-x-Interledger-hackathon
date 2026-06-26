@@ -1,24 +1,67 @@
 import { Router } from 'express';
-import { eq } from 'drizzle-orm';
+import { eq, and, isNull, isNotNull, asc } from 'drizzle-orm';
 import { db } from '../db';
 import { vouchers, users } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
 import { createQuoteTransaction } from '../lib/quoteFlow';
 import { normaliseWalletAddress } from '../lib/openPayments';
+import crypto from 'node:crypto';
 
 export const payRouter = Router();
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/pay/lookup
+// GET /api/pay/merchants
 //
-// Validate a voucher code and return its details without deducting anything.
-// Used by the frontend to show the balance before the user commits.
+// Returns distinct merchant (provider) names — one per unique provider in the
+// voucher pool, regardless of claimed status. Used to populate the merchant
+// picker on the pay page.
 // ─────────────────────────────────────────────────────────────────────────────
-payRouter.post('/lookup', requireAuth, async (req, res, next) => {
+payRouter.get('/merchants', requireAuth, async (req, res, next) => {
   try {
-    const { code } = req.body as { code?: string };
-    if (!code?.trim()) {
-      return res.status(400).json({ error: 'Voucher code is required' });
+    const rows = await db
+      .selectDistinct({ provider: vouchers.provider })
+      .from(vouchers)
+      .where(eq(vouchers.status, 'ACTIVE'))
+      .all();
+
+    res.json(rows.map(r => r.provider).sort());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/pay/providers
+//
+// Returns the list of distinct provider names that have at least one unclaimed
+// pool voucher. Used to populate the provider dropdown on the load form.
+// ─────────────────────────────────────────────────────────────────────────────
+payRouter.get('/providers', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await db
+      .selectDistinct({ provider: vouchers.provider })
+      .from(vouchers)
+      .where(and(eq(vouchers.status, 'ACTIVE'), isNull(vouchers.userId)))
+      .all();
+
+    res.json(rows.map(r => r.provider).sort());
+  } catch (err) {
+    next(err);
+  }
+});
+//
+// Claim a pool voucher onto the current user's account.
+//   Body: { provider: string; code: string }
+// Validates that:
+//   • the code exists in the pool for that provider
+//   • it is still ACTIVE and unclaimed (userId IS NULL)
+// Then sets userId = req.user.id so it appears in the user's wallet.
+// ─────────────────────────────────────────────────────────────────────────────
+payRouter.post('/load', requireAuth, async (req, res, next) => {
+  try {
+    const { provider, code } = req.body as { provider?: string; code?: string };
+    if (!provider?.trim() || !code?.trim()) {
+      return res.status(400).json({ error: 'provider and code are required' });
     }
 
     const voucher = await db
@@ -30,20 +73,34 @@ payRouter.post('/lookup', requireAuth, async (req, res, next) => {
     if (!voucher) {
       return res.status(404).json({ error: 'Voucher code not found' });
     }
+    if (voucher.provider !== provider) {
+      return res.status(400).json({ error: `This code does not belong to ${provider}` });
+    }
     if (voucher.status === 'DEPLETED') {
       return res.status(409).json({ error: 'This voucher has already been fully used' });
     }
     if (voucher.status === 'EXPIRED') {
       return res.status(409).json({ error: 'This voucher has expired' });
     }
+    if (voucher.userId !== null) {
+      // Already claimed — if it belongs to this user, treat as a friendly duplicate
+      if (voucher.userId === req.user!.id) {
+        return res.status(409).json({ error: 'You have already loaded this voucher' });
+      }
+      return res.status(409).json({ error: 'This voucher has already been claimed' });
+    }
 
-    // Return balance in cents and major units for display
+    await db
+      .update(vouchers)
+      .set({ userId: req.user!.id, updatedAt: new Date() })
+      .where(eq(vouchers.id, voucher.id));
+
     res.json({
       id:           voucher.id,
       code:         voucher.code,
+      provider:     voucher.provider,
       label:        voucher.label,
       balanceCents: voucher.balanceCents,
-      balanceRands: (voucher.balanceCents / 100).toFixed(2),
       status:       voucher.status,
     });
   } catch (err) {
@@ -52,71 +109,127 @@ payRouter.post('/lookup', requireAuth, async (req, res, next) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// GET /api/pay/my-vouchers
+//
+// Returns all vouchers loaded onto the current user's account (ACTIVE ones
+// ordered oldest-first so the UI shows them consistently).
+// ─────────────────────────────────────────────────────────────────────────────
+payRouter.get('/my-vouchers', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await db
+      .select()
+      .from(vouchers)
+      .where(and(eq(vouchers.userId, req.user!.id), eq(vouchers.status, 'ACTIVE')))
+      .orderBy(asc(vouchers.createdAt))
+      .all();
+
+    res.json(rows.map(v => ({
+      id:           v.id,
+      code:         v.code,
+      provider:     v.provider,
+      label:        v.label,
+      balanceCents: v.balanceCents,
+      status:       v.status,
+    })));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // POST /api/pay/quote
 //
-// The main voucher-pay flow:
-//   1. Validate voucher + purchase amount
-//   2. Calculate how much the ILP wallet needs to top up
-//   3. If topUp > 0: run the Open Payments quote flow and return a QuoteResponse
-//      so the frontend can continue into the normal consent → callback pipeline.
-//   4. If topUp = 0 (voucher covers everything): deduct from voucher immediately
-//      and return a "no-wallet-needed" response.
-//
-// The voucher balance is NOT deducted here — it's deducted in /api/pay/confirm
-// after the ILP payment completes (or immediately if no top-up is needed).
-// This prevents the voucher being consumed if the user abandons the ILP flow.
+// Merchant-aware multi-voucher pay flow:
+//   1. Accept `merchant` (provider name) — only vouchers from that provider
+//      are eligible for auto-combine.
+//   2. Drain matching vouchers oldest-first to cover as much as possible.
+//   3. If there are no matching vouchers, the full amount is an ILP top-up.
+//   4. If a remainder exists: run the Open Payments quote flow.
 // ─────────────────────────────────────────────────────────────────────────────
 payRouter.post('/quote', requireAuth, async (req, res, next) => {
   try {
-    const { voucherId, purchaseAmountCents } = req.body as {
-      voucherId?:           string;
+    const { purchaseAmountCents, merchant } = req.body as {
       purchaseAmountCents?: number;
+      merchant?:            string;
     };
 
-    if (!voucherId || purchaseAmountCents == null) {
-      return res.status(400).json({ error: 'voucherId and purchaseAmountCents are required' });
+    if (purchaseAmountCents == null) {
+      return res.status(400).json({ error: 'purchaseAmountCents is required' });
     }
     if (!Number.isInteger(purchaseAmountCents) || purchaseAmountCents <= 0) {
       return res.status(400).json({ error: 'purchaseAmountCents must be a positive integer' });
     }
-
-    const voucher = await db
-      .select()
-      .from(vouchers)
-      .where(eq(vouchers.id, voucherId))
-      .get();
-
-    if (!voucher || voucher.status !== 'ACTIVE') {
-      return res.status(404).json({ error: 'Voucher not found or no longer active' });
+    if (!merchant?.trim()) {
+      return res.status(400).json({ error: 'merchant is required' });
     }
 
-    const voucherCovers = Math.min(voucher.balanceCents, purchaseAmountCents);
-    const topUpCents    = purchaseAmountCents - voucherCovers;
+    // Fetch the user's ACTIVE vouchers for this merchant only, oldest first
+    const userVouchers = await db
+      .select()
+      .from(vouchers)
+      .where(and(
+        eq(vouchers.userId,   req.user!.id),
+        eq(vouchers.status,   'ACTIVE'),
+        eq(vouchers.provider, merchant.trim()),
+      ))
+      .orderBy(asc(vouchers.createdAt))
+      .all();
 
-    // Case A: voucher fully covers the purchase — no ILP payment needed
+    // Also need the merchant wallet — grab from any pool voucher for this provider
+    const poolVoucher = await db
+      .select({ merchantWallet: vouchers.merchantWallet })
+      .from(vouchers)
+      .where(eq(vouchers.provider, merchant.trim()))
+      .get();
+
+    if (!poolVoucher) {
+      return res.status(400).json({ error: `Unknown merchant: ${merchant}` });
+    }
+
+    // ── Greedy drain: consume matching vouchers oldest-first ──────────────
+    let remaining = purchaseAmountCents;
+    const contributions: Array<{ voucherId: string; label: string; deductCents: number }> = [];
+
+    for (const v of userVouchers) {
+      if (remaining <= 0) break;
+      const take = Math.min(v.balanceCents, remaining);
+      if (take > 0) {
+        contributions.push({ voucherId: v.id, label: v.label, deductCents: take });
+        remaining -= take;
+      }
+    }
+
+    const voucherCovers = purchaseAmountCents - remaining;
+    const topUpCents    = remaining;
+
+    // ── Case A: vouchers fully cover the purchase ─────────────────────────
     if (topUpCents === 0) {
-      // Deduct immediately
-      const newBalance = voucher.balanceCents - voucherCovers;
-      await db
-        .update(vouchers)
-        .set({
-          balanceCents: newBalance,
-          status:       newBalance === 0 ? 'DEPLETED' : 'ACTIVE',
-          updatedAt:    new Date(),
-        })
-        .where(eq(vouchers.id, voucherId));
+      const now = new Date();
+      for (const c of contributions) {
+        const v = userVouchers.find(x => x.id === c.voucherId)!;
+        const newBalance = v.balanceCents - c.deductCents;
+        await db
+          .update(vouchers)
+          .set({
+            balanceCents: newBalance,
+            status:       newBalance === 0 ? 'DEPLETED' : 'ACTIVE',
+            updatedAt:    now,
+          })
+          .where(eq(vouchers.id, v.id));
+      }
 
       return res.json({
         requiresTopUp:  false,
-        voucherCovers:  voucherCovers,
+        voucherCovers,
         topUpCents:     0,
-        voucherLabel:   voucher.label,
+        merchant,
+        contributions,
         transactionId:  null,
         quote:          null,
       });
     }
 
-    // If top-up is needed, look up the user's wallet from the DB
+    // ── Case B: ILP top-up needed ─────────────────────────────────────────
     const [userRow] = await db
       .select({ walletAddress: users.walletAddress })
       .from(users)
@@ -124,17 +237,15 @@ payRouter.post('/quote', requireAuth, async (req, res, next) => {
 
     if (!userRow?.walletAddress) {
       return res.status(400).json({
-        error: 'You need to add a wallet address to your profile before paying the top-up',
+        error: 'You need to add a wallet address to your profile before paying any top-up',
       });
     }
 
-    // topUpCents is ZAR cents (the merchant wallet is ZAR).
-    // The sender's wallet may be a different currency (e.g. EUR), so we use
-    // FIXED_RECEIVE: the merchant receives exactly topUpCents in ZAR, and the
-    // quote resolves the correct debit amount in the sender's own currency.
+    // FIXED_RECEIVE: merchant receives exactly topUpCents in ZAR; quote
+    // resolves the debit amount in the sender's own currency automatically.
     const result = await createQuoteTransaction({
       senderWalletAddress:   userRow.walletAddress,
-      receiverWalletAddress: normaliseWalletAddress(voucher.merchantWallet),
+      receiverWalletAddress: normaliseWalletAddress(poolVoucher.merchantWallet),
       amount:                topUpCents.toString(),
       paymentType:           'FIXED_RECEIVE',
       userId:                req.user!.id,
@@ -142,10 +253,10 @@ payRouter.post('/quote', requireAuth, async (req, res, next) => {
 
     res.json({
       requiresTopUp: true,
-      voucherCovers: voucherCovers,
-      topUpCents:    topUpCents,
-      voucherLabel:  voucher.label,
-      voucherId:     voucher.id,
+      voucherCovers,
+      topUpCents,
+      merchant,
+      contributions,
       transactionId: result.transactionId,
       quote:         result.quote,
     });
@@ -157,37 +268,37 @@ payRouter.post('/quote', requireAuth, async (req, res, next) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/pay/confirm
 //
-// Called by /api/callback (after a successful ILP payment) to deduct the
-// voucher balance. Also callable directly by the frontend for the no-top-up
-// path (though that's already handled in /quote above).
-//
-// Idempotent: if the voucher was already deducted (e.g. double-call), it's a no-op.
+// Called after a successful ILP payment (from /api/callback) to deduct
+// voucher balances for the top-up path. Also used directly for the no-top-up
+// path (though that already deducts in /quote).
+// Body: { contributions: Array<{ voucherId: string; deductCents: number }> }
 // ─────────────────────────────────────────────────────────────────────────────
 payRouter.post('/confirm', requireAuth, async (req, res, next) => {
   try {
-    const { voucherId, deductCents } = req.body as {
-      voucherId?:   string;
-      deductCents?: number;
+    const { contributions } = req.body as {
+      contributions?: Array<{ voucherId: string; deductCents: number }>;
     };
 
-    if (!voucherId || deductCents == null) {
-      return res.status(400).json({ error: 'voucherId and deductCents are required' });
+    if (!Array.isArray(contributions) || contributions.length === 0) {
+      return res.status(400).json({ error: 'contributions array is required' });
     }
 
-    const voucher = await db.select().from(vouchers).where(eq(vouchers.id, voucherId)).get();
-    if (!voucher) return res.status(404).json({ error: 'Voucher not found' });
+    const now = new Date();
+    for (const c of contributions) {
+      const v = await db.select().from(vouchers).where(eq(vouchers.id, c.voucherId)).get();
+      if (!v) continue;
+      const newBalance = Math.max(0, v.balanceCents - c.deductCents);
+      await db
+        .update(vouchers)
+        .set({
+          balanceCents: newBalance,
+          status:       newBalance === 0 ? 'DEPLETED' : 'ACTIVE',
+          updatedAt:    now,
+        })
+        .where(eq(vouchers.id, v.id));
+    }
 
-    const newBalance = Math.max(0, voucher.balanceCents - deductCents);
-    await db
-      .update(vouchers)
-      .set({
-        balanceCents: newBalance,
-        status:       newBalance === 0 ? 'DEPLETED' : 'ACTIVE',
-        updatedAt:    new Date(),
-      })
-      .where(eq(vouchers.id, voucherId));
-
-    res.json({ ok: true, remainingCents: newBalance });
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

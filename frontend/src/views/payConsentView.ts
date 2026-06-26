@@ -1,4 +1,5 @@
 import { api, PayQuoteResponse } from '../api';
+import { escapeHtml } from '../escape';
 
 function formatRands(cents: number): string {
   return `R${(cents / 100).toFixed(2)}`;
@@ -11,7 +12,6 @@ function formatMoney(value: string, assetCode: string, assetScale: number): stri
 export function renderPayConsentView(
   container: HTMLElement,
   result: PayQuoteResponse,
-  _voucher: unknown,
   purchaseAmountCents: number,
   onBack: () => void
 ): void {
@@ -29,6 +29,16 @@ export function renderPayConsentView(
     ? formatMoney(receiveAmount.value, receiveAmount.assetCode, receiveAmount.assetScale)
     : formatRands(result.topUpCents);
 
+  // Build per-voucher contribution rows
+  const contributionRows = result.contributions.map(c => `
+    <div class="split-row">
+      <span class="split-label">
+        ${c.label} <span class="split-badge split-badge-voucher">voucher</span>
+      </span>
+      <span class="split-value-voucher">−${formatRands(c.deductCents)}</span>
+    </div>
+  `).join('');
+
   container.innerHTML = `
     <div class="card send-card">
       <div class="step-indicator">
@@ -41,7 +51,7 @@ export function renderPayConsentView(
 
       <div class="pay-header">
         <h2 class="pay-title">Payment breakdown</h2>
-        <p class="pay-subtitle">Review how this payment will be split before authorising.</p>
+        <p class="pay-subtitle">Review how this payment at <strong>${escapeHtml(result.merchant)}</strong> will be split before authorising.</p>
       </div>
 
       <div class="split-breakdown">
@@ -49,12 +59,7 @@ export function renderPayConsentView(
           <span class="split-label">Purchase total</span>
           <span class="split-value-total">${formatRands(purchaseAmountCents)}</span>
         </div>
-        <div class="split-row">
-          <span class="split-label">
-            Voucher <span class="split-badge split-badge-voucher">covers</span>
-          </span>
-          <span class="split-value-voucher">−${formatRands(result.voucherCovers)}</span>
-        </div>
+        ${contributionRows}
         ${result.requiresTopUp ? `
           <div class="split-row">
             <span class="split-label">
@@ -68,7 +73,7 @@ export function renderPayConsentView(
           </div>
         ` : `
           <div class="split-row split-total">
-            <span>Voucher covers everything 🎉</span>
+            <span>Vouchers cover everything 🎉</span>
             <span class="split-value-voucher">R0.00 from wallet</span>
           </div>
         `}
@@ -85,7 +90,7 @@ export function renderPayConsentView(
         </p>
       ` : `
         <p class="muted">
-          Your voucher covers the full amount — no wallet payment needed.
+          Your vouchers cover the full amount — no wallet payment needed.
           Click <strong>Confirm</strong> to complete the purchase.
         </p>
       `}
@@ -113,7 +118,7 @@ export function renderPayConsentView(
 
     try {
       if (!result.requiresTopUp) {
-        // Voucher-only — already deducted in /api/pay/quote; go straight to a success state
+        // Voucher-only — already deducted in /api/pay/quote; go straight to success
         window.location.hash = '#/pay-success';
         return;
       }

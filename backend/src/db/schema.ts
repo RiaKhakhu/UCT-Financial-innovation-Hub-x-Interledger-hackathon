@@ -163,18 +163,24 @@ export type PostUnlock    = typeof postUnlocks.$inferSelect;
 export type NewPostUnlock = typeof postUnlocks.$inferInsert;
 
 // ─── Vouchers ──────────────────────────────────────────────────────────────
-// Simulated voucher registry. Seeded on first boot. Balances are stored in
-// ZAR major units (e.g. "100.00") for human-readability in the seed file.
-// The pay route deducts from balance and stores the remainder.
+// Two roles in one table:
+//   • Pool vouchers  (userId IS NULL)  — unissued codes in the dummy provider DB.
+//   • User vouchers  (userId NOT NULL) — loaded onto a user's wallet after /load.
+// The pay route drains user vouchers (oldest first) to cover a purchase,
+// then tops up any remainder via ILP.
 export const vouchers = sqliteTable('vouchers', {
   id:             text('id').primaryKey(),        // crypto.randomUUID()
   code:           text('code').notNull().unique(), // e.g. "PICK-1234-ABCD"
+  // Provider brand name, e.g. "Checkers", "Woolworths"
+  provider:       text('provider').notNull().default('Unknown'),
   // Human label shown to the user after redemption
   label:          text('label').notNull(),         // e.g. "Checkers R100 Gift Card"
   // Balance in ZAR cents (integer, no float drift). e.g. 10000 = R100.00
   balanceCents:   integer('balance_cents').notNull(),
   // The merchant's ILP wallet address — top-up payments go here
   merchantWallet: text('merchant_wallet').notNull(),
+  // NULL = pool (not yet loaded); user UUID = loaded onto that user's account
+  userId:         text('user_id'),
   // ACTIVE | DEPLETED | EXPIRED
   status:         text('status').notNull().default('ACTIVE'),
   createdAt:      integer('created_at', { mode: 'timestamp' }).notNull(),
