@@ -6,11 +6,6 @@ dist/
 *.db-shm
 *.db-wal
 
-# Environment variables — never commit secrets
-.env
-backend/.env
-frontend/.env
-
 # Private keys — never commit
 *.key
 *.pem
