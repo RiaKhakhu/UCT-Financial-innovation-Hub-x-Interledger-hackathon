@@ -6,9 +6,6 @@ dist/
 *.db-shm
 *.db-wal
 
-# Private keys — never commit
-*.key
-*.pem
 
 # Drizzle generated migrations (optional — only needed for migrate, not push)
 backend/drizzle/
