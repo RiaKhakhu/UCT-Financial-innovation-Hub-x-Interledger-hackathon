@@ -158,20 +158,19 @@ cp env.example .env
 
 ## Database
 
-The project uses SQLite via Drizzle. Live data is stored in `backend/openremit.db`.
+The project uses SQLite via Drizzle. Live data is stored in `backend/voucher2.db`.
 
-To reset the database, delete `backend/openremit.db` and restart the backend. The app seeds demo vouchers and news posts on first boot.
+To reset the database, delete `backend/voucher2.db` and restart the backend. The app seeds demo vouchers and news posts on first boot.
 
 ## Demo voucher pool
 
 The app seeds a sample pool of vendor-specific vouchers. Each voucher is only usable at its listed provider.
 
 Example seeded vouchers:
-- Checkers: R100, R50, R200
-- Woolworths: R200, R100, R500
-- SPAR: R50, R100
-- Edgars: R150, R75
-- Game Stores: R500, R250
+- Checkers: R100, R50
+- Woolworths: R200
+- SPAR: R50
+- Game Stores: R500
 
 ## Frontend behavior
 
@@ -188,34 +187,19 @@ The frontend is a hash-based SPA with routes for:
 
 The UI displays ZAR amounts and uses voucher values in ZAR cents.
 
-## Known limitations
-
-1. Voucher deduction for the ILP top-up path is not currently wired through `GET /api/callback`. Top-up payments complete the ILP path, but the voucher deduction step still relies on `POST /api/pay/confirm`.
-2. `JWT_SECRET` defaults to `changeme` in `.env`. Change it before any real deployment.
-3. All sample providers currently share the same merchant wallet address. The schema supports per-voucher merchant wallets.
-4. The provider dropdown may still show a provider when its pool vouchers are exhausted.
-5. There is no admin interface for removing or managing vouchers once loaded.
-
 ## Local development
 
-### Backend
+### Running the application
+
+In the project root directory :
 
 ```bash
-cd backend
 npm install
+npm run db:push
 npm run dev
 ```
 
 The backend starts on port `3001`.
-
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
 The frontend starts on port `5173`.
 
 ## Notes
