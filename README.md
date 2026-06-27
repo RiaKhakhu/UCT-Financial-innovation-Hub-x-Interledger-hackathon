@@ -129,10 +129,32 @@ The backend is configured from `backend/.env` using:
 - `OP_WALLET_ADDRESS` — the app signing wallet address
 - `OP_KEY_ID` — key ID for the signing wallet
 - `OP_PRIVATE_KEY_PATH` — path to the private key PEM or base64 DER blob
+- `DB_PATH` — location of the SQLite database file (default `./voucher2.db`)
+- `JWT_SECRET` — JWT signing secret
 
 The private key loader in `backend/src/lib/openPayments.ts` accepts either:
 - a normal PEM file with `-----BEGIN PRIVATE KEY-----`, or
 - a bare base64 DER/PKCS8 blob, and wraps it into PEM.
+
+## Environment setup
+
+1. Copy the backend env sample:
+
+```bash
+cd backend
+cp env.example .env
+```
+
+2. Open `backend/.env` and fill in the Open Payments values:
+
+- `OP_WALLET_ADDRESS`
+- `OP_KEY_ID`
+- `OP_PRIVATE_KEY_PATH`
+- `JWT_SECRET`
+
+3. Ensure the private key file referenced by `OP_PRIVATE_KEY_PATH` exists.
+
+4. Optionally update `BACKEND_URL`, `FRONTEND_URL`, and `DB_PATH` if you are running on custom ports or paths.
 
 ## Database
 
