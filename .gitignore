@@ -13,3 +13,9 @@ backend/drizzle/
 # OS
 .DS_Store
 Thumbs.db
+
+# private keys
+*.pem
+
+#env files
+*.env
