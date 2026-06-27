@@ -18,4 +18,4 @@ Thumbs.db
 *.pem
 
 #env files
-*.env
+backend/.env
